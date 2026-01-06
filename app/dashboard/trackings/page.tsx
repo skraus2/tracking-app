@@ -1,0 +1,1001 @@
+'use client';
+
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { MultiSelect } from '@/components/ui/multi-select';
+import { Switch } from '@/components/ui/switch';
+import { Skeleton } from '@/components/ui/skeleton';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { useState, useEffect } from 'react';
+import { useSelectWidth } from '@/hooks/use-select-width';
+import { useRole } from '@/lib/role-context';
+import { useSearchParams, useRouter } from 'next/navigation';
+import { Search, ArrowUpDown, X, RefreshCw, Play, Square } from 'lucide-react';
+import { toast } from 'sonner';
+import { MultiSelectOption } from '@/components/ui/multi-select';
+
+type TrackingOrder = {
+  id: string;
+  shopId: string;
+  shopStatus: 'active' | 'inactive';
+  order: string;
+  trackingNumber: string;
+  currentStatus: string;
+  lastStatusUpdate: string;
+  daysSinceUpdate: number;
+  processStatus: 'Running' | 'Stopped' | null;
+  trackingId: string | null;
+};
+
+// Map ShopifyStatus enum to display format
+function formatStatus(status: string): string {
+  const statusMap: Record<string, string> = {
+    ATTEMPTED_DELIVERY: 'Attempted Delivery',
+    CARRIER_PICKED_UP: 'Carrier Picked Up',
+    CONFIRMED: 'Confirmed',
+    DELAYED: 'Delayed',
+    DELIVERED: 'Delivered',
+    FAILURE: 'Failure',
+    IN_TRANSIT: 'In Transit',
+    LABEL_PRINTED: 'Label Printed',
+    LABEL_PURCHASED: 'Label Purchased',
+    OUT_FOR_DELIVERY: 'Out for Delivery',
+    READY_FOR_PICKUP: 'Ready for Pickup',
+    UNKNOWN: 'Unknown',
+  };
+  return statusMap[status] || (status === '' ? 'Unknown' : status);
+}
+
+// Reverse map for filtering
+// Returns null for "Unknown" to filter by null statusCurrent in database
+function unformatStatus(status: string): string | null {
+  const reverseMap: Record<string, string | null> = {
+    'Attempted Delivery': 'ATTEMPTED_DELIVERY',
+    'Carrier Picked Up': 'CARRIER_PICKED_UP',
+    Confirmed: 'CONFIRMED',
+    Delayed: 'DELAYED',
+    Delivered: 'DELIVERED',
+    Failure: 'FAILURE',
+    'In Transit': 'IN_TRANSIT',
+    'Label Printed': 'LABEL_PRINTED',
+    'Label Purchased': 'LABEL_PURCHASED',
+    'Out for Delivery': 'OUT_FOR_DELIVERY',
+    'Ready for Pickup': 'READY_FOR_PICKUP',
+    Unknown: null, // null means filter by statusCurrent IS NULL
+  };
+  return reverseMap[status] !== undefined ? reverseMap[status] : status;
+}
+
+// Status options for filtering (includes Unknown for null statusCurrent)
+const STATUS_OPTIONS = [
+  { value: 'Label Purchased', label: 'Label Purchased' },
+  { value: 'Confirmed', label: 'Confirmed' },
+  { value: 'Carrier Picked Up', label: 'Carrier Picked Up' },
+  { value: 'In Transit', label: 'In Transit' },
+  { value: 'Out for Delivery', label: 'Out for Delivery' },
+  { value: 'Attempted Delivery', label: 'Attempted Delivery' },
+  { value: 'Delivered', label: 'Delivered' },
+  { value: 'Ready for Pickup', label: 'Ready for Pickup' },
+  { value: 'Delayed', label: 'Delayed' },
+  { value: 'Failure', label: 'Failure' },
+  { value: 'Unknown', label: 'Unknown' },
+];
+
+export default function TrackingsPage() {
+  const { role } = useRole();
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const [daysThreshold] = useState(7);
+  const [orderSearchQuery, setOrderSearchQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState<string[]>([]);
+  const [noUpdateFilter, setNoUpdateFilter] = useState(false);
+  const [processStatusFilter, setProcessStatusFilter] = useState<
+    'Running' | 'Stopped' | null
+  >('Running');
+  const [storeFilter, setStoreFilter] = useState<string[]>([]);
+  const [storeOptions, setStoreOptions] = useState<MultiSelectOption[]>([]);
+  const [showStoreFilter, setShowStoreFilter] = useState(false);
+  const [activeQuickFilter, setActiveQuickFilter] = useState<string | null>(
+    null
+  );
+  const [sortColumn, setSortColumn] = useState<string | null>(null);
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage, setItemsPerPage] = useState(10);
+  const [trackings, setTrackings] = useState<TrackingOrder[]>([]);
+  const [stores, setStores] = useState<Record<string, string>>({});
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
+  const [totalPages, setTotalPages] = useState(1);
+  const [total, setTotal] = useState(0);
+  const [updatingFulfillmentId, setUpdatingFulfillmentId] = useState<
+    string | null
+  >(null);
+
+  // Calculate width for process status select based on all possible text values
+  const processStatusSelectWidth = useSelectWidth([
+    'All Process Statuses',
+    'Running',
+    'Stopped',
+  ]);
+
+  // Fetch stores for shop name lookup and filter
+  useEffect(() => {
+    const loadStores = async () => {
+      try {
+        // Use user stores endpoint for filter options
+        const userStoresResponse = await fetch('/api/stores/user');
+        if (userStoresResponse.ok) {
+          const userStoresData = await userStoresResponse.json();
+          const options: MultiSelectOption[] = userStoresData.data.map(
+            (store: { id: string; name: string }) => ({
+              value: store.id,
+              label: store.name,
+            })
+          );
+          setStoreOptions(options);
+
+          // Show filter if user has more than 1 store or is admin
+          setShowStoreFilter(role === 'admin' || options.length > 1);
+
+          // Initialize selected stores from URL params
+          const storesParam = searchParams.get('stores');
+          if (storesParam) {
+            const storeIds = storesParam.split(',').filter(Boolean);
+            // Validate that all store IDs exist
+            const validStoreIds = storeIds.filter((id) =>
+              options.some((s) => s.value === id)
+            );
+            if (validStoreIds.length > 0) {
+              setStoreFilter(validStoreIds);
+            }
+          }
+        }
+
+        // Also fetch all stores for name lookup (admin endpoint or user endpoint)
+        const allStoresResponse = await fetch('/api/stores/user');
+        if (allStoresResponse.ok) {
+          const allStoresData = await allStoresResponse.json();
+          const storeMap: Record<string, string> = {};
+          allStoresData.data.forEach((store: { id: string; name: string }) => {
+            storeMap[store.id] = store.name;
+          });
+          setStores(storeMap);
+        }
+      } catch (error) {
+        console.error('Failed to load stores:', error);
+      }
+    };
+
+    loadStores();
+  }, [role, searchParams.toString()]);
+
+  // Update URL when filters change
+  useEffect(() => {
+    if (storeOptions.length === 0) return; // Wait for stores to load
+
+    const params = new URLSearchParams(searchParams.toString());
+    const currentStoresParam = params.get('stores') || '';
+    const newStoresParam = storeFilter.length > 0 ? storeFilter.join(',') : '';
+
+    // Only update if actually changed (normalize null to empty string for comparison)
+    if (currentStoresParam === newStoresParam) {
+      return;
+    }
+
+    // Update stores param
+    if (storeFilter.length > 0) {
+      params.set('stores', storeFilter.join(','));
+    } else {
+      params.delete('stores');
+    }
+
+    // Update page to 1 when filters change (except page itself)
+    if (params.get('page') !== '1') {
+      params.set('page', '1');
+    }
+
+    const newUrl = params.toString()
+      ? `${window.location.pathname}?${params.toString()}`
+      : window.location.pathname;
+    router.replace(newUrl, { scroll: false });
+  }, [storeFilter, storeOptions.length, router]);
+
+  // Fetch trackings
+  const fetchTrackings = async (isRefresh = false) => {
+    try {
+      if (isRefresh) {
+        setRefreshing(true);
+      } else {
+        setInitialLoading(true);
+      }
+      const params = new URLSearchParams({
+        page: currentPage.toString(),
+        limit: itemsPerPage.toString(),
+      });
+
+      if (orderSearchQuery) {
+        params.append('search', orderSearchQuery);
+      }
+      if (statusFilter.length > 0) {
+        // Convert display status to enum format
+        // Filter out null values (Unknown) and handle them separately
+        const enumStatuses = statusFilter
+          .map(unformatStatus)
+          .filter((s): s is string => s !== null);
+        const hasUnknown = statusFilter.some((s) => unformatStatus(s) === null);
+
+        if (enumStatuses.length > 0) {
+          params.append('status', enumStatuses.join(','));
+        }
+        if (hasUnknown) {
+          params.append('statusNull', 'true');
+        }
+      }
+      if (noUpdateFilter) {
+        params.append('noUpdateDays', daysThreshold.toString());
+      }
+      if (processStatusFilter) {
+        params.append('processStatus', processStatusFilter);
+      }
+      if (storeFilter.length > 0) {
+        params.append('stores', storeFilter.join(','));
+      }
+      if (sortColumn) {
+        params.append('sortBy', sortColumn);
+        params.append('sortOrder', sortDirection);
+      }
+
+      const response = await fetch(`/api/trackings?${params.toString()}`);
+      if (!response.ok) {
+        throw new Error('Failed to fetch trackings');
+      }
+
+      const data = await response.json();
+      // Format statuses for display
+      const formattedTrackings = data.data.map((tracking: TrackingOrder) => ({
+        ...tracking,
+        currentStatus: formatStatus(tracking.currentStatus),
+      }));
+      setTrackings(formattedTrackings);
+      setTotalPages(data.pagination.totalPages);
+      setTotal(data.pagination.total);
+      setHasLoadedOnce(true);
+    } catch (error: any) {
+      toast.error('Error', {
+        description: error.message || 'Failed to fetch trackings',
+      });
+    } finally {
+      if (isRefresh) {
+        setRefreshing(false);
+      } else {
+        setInitialLoading(false);
+      }
+    }
+  };
+
+  useEffect(() => {
+    // Only use initialLoading if we haven't loaded data yet, otherwise use refreshing
+    fetchTrackings(hasLoadedOnce);
+  }, [
+    currentPage,
+    itemsPerPage,
+    orderSearchQuery,
+    statusFilter,
+    noUpdateFilter,
+    processStatusFilter,
+    storeFilter,
+    sortColumn,
+    sortDirection,
+    daysThreshold,
+  ]);
+
+  const hasActiveFilters =
+    orderSearchQuery !== '' ||
+    statusFilter.length > 0 ||
+    noUpdateFilter ||
+    processStatusFilter !== null ||
+    storeFilter.length > 0 ||
+    activeQuickFilter !== null;
+
+  const getShopName = (shopId: string) => {
+    return stores[shopId] || 'Unknown';
+  };
+
+  const handleSort = (column: string) => {
+    if (sortColumn === column) {
+      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortColumn(column);
+      setSortDirection('asc');
+    }
+    setCurrentPage(1);
+  };
+
+  const getStatusColor = (status: string) => {
+    const statusMap: Record<
+      string,
+      'default' | 'secondary' | 'destructive' | 'outline'
+    > = {
+      'Attempted Delivery': 'destructive',
+      'Carrier Picked Up': 'default',
+      Confirmed: 'secondary',
+      Delayed: 'destructive',
+      Delivered: 'outline',
+      Failure: 'destructive',
+      'In Transit': 'default',
+      'Label Printed': 'secondary',
+      'Label Purchased': 'secondary',
+      'Out for Delivery': 'default',
+      'Ready for Pickup': 'default',
+      Unknown: 'secondary',
+    };
+    return statusMap[status] || 'secondary';
+  };
+
+  const handleQuickFilter = (filterId: string) => {
+    if (activeQuickFilter === filterId) {
+      setActiveQuickFilter(null);
+      setStatusFilter([]);
+      setNoUpdateFilter(false);
+      setProcessStatusFilter(null);
+    } else {
+      setActiveQuickFilter(filterId);
+      if (filterId === 'excluding-delivered') {
+        setStatusFilter([
+          'Confirmed',
+          'In Transit',
+          'Out for Delivery',
+          'Delayed',
+          'Attempted Delivery',
+          'Failure',
+        ]);
+        setNoUpdateFilter(true);
+        setProcessStatusFilter(null);
+      } else if (filterId === 'confirmed-only') {
+        setStatusFilter(['Confirmed']);
+        setNoUpdateFilter(true);
+        setProcessStatusFilter(null);
+      } else if (filterId === 'running') {
+        setProcessStatusFilter('Running');
+        setStatusFilter([]);
+        setNoUpdateFilter(false);
+      } else if (filterId === 'stopped') {
+        setProcessStatusFilter('Stopped');
+        setStatusFilter([]);
+        setNoUpdateFilter(false);
+      }
+    }
+    setCurrentPage(1);
+  };
+
+  const handleClearFilters = () => {
+    setOrderSearchQuery('');
+    setStatusFilter([]);
+    setNoUpdateFilter(false);
+    setProcessStatusFilter(null);
+    setStoreFilter([]);
+    setActiveQuickFilter(null);
+    setCurrentPage(1);
+  };
+
+  const handleStatusChange = (value: string[]) => {
+    setStatusFilter(value);
+    setActiveQuickFilter(null);
+  };
+
+  const handleNoUpdateChange = (checked: boolean) => {
+    setNoUpdateFilter(checked);
+    setActiveQuickFilter(null);
+  };
+
+  const handleManualUpdate = async (fulfillmentId: string) => {
+    setUpdatingFulfillmentId(fulfillmentId);
+
+    // Show loading toast
+    const loadingToastId = toast.loading('Updating tracking...', {
+      description: 'Fetching latest status from 17Track',
+    });
+
+    try {
+      const response = await fetch(`/api/trackings/${fulfillmentId}`, {
+        method: 'POST',
+      });
+
+      const result = await response.json();
+
+      if (!response.ok || !result.success) {
+        // Dismiss loading toast
+        toast.dismiss(loadingToastId);
+
+        // Build detailed error message
+        const errorDetails = result.details || {};
+        let errorDescription = result.error || 'Failed to update tracking';
+
+        // Add step-by-step error details
+        const errorSteps: string[] = [];
+        if (errorDetails.track17 && !errorDetails.track17.success) {
+          errorSteps.push(
+            `17Track: ${errorDetails.track17.error || 'Failed to fetch tracking info'}`
+          );
+        }
+        if (errorDetails.statusMapping && !errorDetails.statusMapping.success) {
+          errorSteps.push(
+            `Status Mapping: ${errorDetails.statusMapping.error || 'Failed to map status'}`
+          );
+        }
+        if (errorDetails.shopify && !errorDetails.shopify.success) {
+          errorSteps.push(
+            `Shopify Sync: ${errorDetails.shopify.error || 'Failed to update Shopify'}`
+          );
+        }
+
+        if (errorSteps.length > 0) {
+          errorDescription = errorSteps.join('\n');
+        }
+
+        toast.error('Update Failed', {
+          description: (
+            <div className="whitespace-pre-line text-sm">
+              {errorDescription}
+            </div>
+          ),
+          duration: 6000,
+        });
+
+        setUpdatingFulfillmentId(null);
+        return;
+      }
+
+      // Dismiss loading toast
+      toast.dismiss(loadingToastId);
+
+      // Build detailed success message
+      const details = result.details || {};
+      const data = result.data || {};
+
+      const successSteps: string[] = [];
+
+      // Add step-by-step success details
+      if (details.track17?.success) {
+        const subStatusText = details.track17.subStatus
+          ? ` / ${details.track17.subStatus}`
+          : '';
+        successSteps.push(
+          `✓ 17Track: Status ${details.track17.status}${subStatusText}`
+        );
+      }
+
+      if (details.statusMapping?.success) {
+        const mappingNote = details.statusMapping.usedFallback
+          ? ' (used fallback mapping)'
+          : '';
+        successSteps.push(
+          `✓ Status Mapping: ${details.statusMapping.shopifyStatus}${mappingNote}`
+        );
+      }
+
+      if (details.shopify?.success) {
+        successSteps.push(`✓ Shopify: Status synced successfully`);
+      }
+
+      if (details.database?.success) {
+        if (details.database.statusChanged) {
+          successSteps.push(
+            `✓ Database: Status changed from ${data.oldStatus || 'N/A'} to ${data.status || 'N/A'}`
+          );
+        } else {
+          successSteps.push(
+            `✓ Database: Status unchanged (${data.status || 'N/A'})`
+          );
+        }
+      }
+
+      // Format description with each step on its own line
+      const successDescription =
+        successSteps.length > 0
+          ? successSteps.join('\n')
+          : 'Tracking updated successfully';
+
+      // Show warning if fallback mapping was used
+      if (details.statusMapping?.usedFallback) {
+        toast.warning('Update Completed with Warning', {
+          description: (
+            <div className="whitespace-pre-line text-sm">
+              {successDescription}
+            </div>
+          ),
+          duration: 6000,
+        });
+      } else {
+        toast.success('Update Completed', {
+          description: (
+            <div className="whitespace-pre-line text-sm">
+              {successDescription}
+            </div>
+          ),
+          duration: 5000,
+        });
+      }
+
+      // Refresh the trackings list
+      fetchTrackings(true);
+    } catch (error: unknown) {
+      // Dismiss loading toast
+      toast.dismiss(loadingToastId);
+
+      const errorMessage =
+        error instanceof Error ? error.message : 'Failed to update tracking';
+      toast.error('Update Failed', {
+        description: errorMessage,
+        duration: 6000,
+      });
+    } finally {
+      setUpdatingFulfillmentId(null);
+    }
+  };
+
+  const handleRegisterTracking = async (fulfillmentId: string) => {
+    try {
+      const response = await fetch(`/api/trackings/${fulfillmentId}`, {
+        method: 'PUT',
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to register tracking');
+      }
+
+      const result = await response.json();
+      const data = result.data || {};
+
+      // Show success message with tracking info status
+      if (data.trackingInfoFetched) {
+        toast.success('Tracking Registered & Updated', {
+          description:
+            'Tracking registered with 17Track, activated, and current status fetched',
+          duration: 5000,
+        });
+      } else if (data.trackingInfoError) {
+        toast.success('Tracking Registered', {
+          description: `Tracking registered and activated. ${data.trackingInfoError}`,
+          duration: 6000,
+        });
+      } else {
+        toast.success('Success', {
+          description: 'Tracking registered with 17Track and activated',
+        });
+      }
+
+      // Refresh the trackings list
+      fetchTrackings(true);
+    } catch (error: any) {
+      toast.error('Error', {
+        description: error.message || 'Failed to register tracking',
+      });
+    }
+  };
+
+  const handleStopTracking = async (trackingId: string) => {
+    try {
+      const response = await fetch('/api/trackings', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          trackingId,
+          processStatus: 'Stopped',
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to stop tracking');
+      }
+
+      toast.success('Tracking Stopped', {
+        description: 'Tracking has been stopped successfully',
+        duration: 5000,
+      });
+
+      // Refresh the trackings list
+      fetchTrackings(true);
+    } catch (error: any) {
+      toast.error('Error', {
+        description: error.message || 'Failed to stop tracking',
+      });
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-start justify-between">
+        <div>
+          <h1 className="text-3xl font-semibold">Trackings</h1>
+          <p className="text-muted-foreground mt-1">
+            View and manage all tracking orders
+          </p>
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between gap-4">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium text-muted-foreground">
+            Quick Filters:
+          </span>
+          <Button
+            variant={
+              activeQuickFilter === 'confirmed-only' ? 'default' : 'outline'
+            }
+            size="sm"
+            onClick={() => handleQuickFilter('confirmed-only')}
+            className="h-8"
+          >
+            Stale ({daysThreshold}d, Confirmed)
+          </Button>
+          <Button
+            variant={
+              activeQuickFilter === 'excluding-delivered'
+                ? 'default'
+                : 'outline'
+            }
+            size="sm"
+            onClick={() => handleQuickFilter('excluding-delivered')}
+            className="h-8"
+          >
+            Stale ({daysThreshold}d, excl. Delivered)
+          </Button>
+          <Button
+            variant={activeQuickFilter === 'running' ? 'default' : 'outline'}
+            size="sm"
+            onClick={() => handleQuickFilter('running')}
+            className="h-8"
+          >
+            Running
+          </Button>
+          <Button
+            variant={activeQuickFilter === 'stopped' ? 'default' : 'outline'}
+            size="sm"
+            onClick={() => handleQuickFilter('stopped')}
+            className="h-8"
+          >
+            Stopped
+          </Button>
+        </div>
+        <div className="flex items-center gap-2">
+          {hasActiveFilters && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleClearFilters}
+              className="h-8"
+            >
+              <X className="mr-2 h-4 w-4" />
+              Clear filters
+            </Button>
+          )}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => fetchTrackings(true)}
+            disabled={refreshing}
+            className="h-8"
+            title="Refresh data"
+          >
+            <RefreshCw className="h-4 w-4" />
+          </Button>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-4">
+        <div className="relative flex-1 min-w-[200px]">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input
+            placeholder="Search by order or tracking number"
+            value={orderSearchQuery}
+            onChange={(e) => {
+              setOrderSearchQuery(e.target.value);
+              setActiveQuickFilter(null);
+              setCurrentPage(1);
+            }}
+            className="pl-9"
+          />
+        </div>
+
+        <MultiSelect
+          options={STATUS_OPTIONS}
+          value={statusFilter}
+          onChange={handleStatusChange}
+          placeholder="All Statuses"
+          emptyMessage="No status found."
+          className="w-[180px]"
+        />
+
+        {showStoreFilter && (
+          <MultiSelect
+            options={storeOptions}
+            value={storeFilter}
+            onChange={(value) => {
+              setStoreFilter(value);
+              setActiveQuickFilter(null);
+              setCurrentPage(1);
+            }}
+            placeholder="All Stores"
+            emptyMessage="No stores found."
+            className="w-[180px]"
+          />
+        )}
+
+        <Select
+          value={processStatusFilter || 'all'}
+          onValueChange={(value) => {
+            setProcessStatusFilter(
+              value === 'all' ? null : (value as 'Running' | 'Stopped')
+            );
+            setActiveQuickFilter(null);
+            setCurrentPage(1);
+          }}
+        >
+          <SelectTrigger
+            className="w-fit"
+            style={
+              processStatusSelectWidth
+                ? {
+                    width: `${processStatusSelectWidth}px`,
+                    minWidth: `${processStatusSelectWidth}px`,
+                  }
+                : undefined
+            }
+          >
+            <SelectValue placeholder="All Process Statuses" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Process Statuses</SelectItem>
+            <SelectItem value="Running">Running</SelectItem>
+            <SelectItem value="Stopped">Stopped</SelectItem>
+          </SelectContent>
+        </Select>
+
+        <div className="flex items-center gap-2 border rounded-lg px-4 py-2">
+          <Switch
+            id="no-update-filter"
+            checked={noUpdateFilter}
+            onCheckedChange={handleNoUpdateChange}
+          />
+          <Label htmlFor="no-update-filter" className="cursor-pointer text-sm">
+            No update since {daysThreshold} days
+          </Label>
+        </div>
+      </div>
+
+      {initialLoading && !hasLoadedOnce ? (
+        <div className="space-y-6">
+          <div>
+            <Skeleton className="h-9 w-48" />
+            <Skeleton className="h-5 w-64 mt-1" />
+          </div>
+
+          <div className="flex flex-wrap items-center gap-4">
+            <Skeleton className="h-10 flex-1 min-w-[200px]" />
+            <Skeleton className="h-10 w-[280px]" />
+            <Skeleton className="h-10 w-[200px]" />
+          </div>
+
+          <div className="border rounded-lg">
+            <div className="p-8 space-y-4">
+              <Skeleton className="h-10 w-full" />
+              <Skeleton className="h-10 w-full" />
+              <Skeleton className="h-10 w-full" />
+              <Skeleton className="h-10 w-full" />
+              <Skeleton className="h-10 w-full" />
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="border rounded-lg">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Shop</TableHead>
+                <TableHead>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="-ml-3 h-8"
+                    onClick={() => handleSort('order')}
+                  >
+                    Order
+                    <ArrowUpDown className="ml-2 h-4 w-4" />
+                  </Button>
+                </TableHead>
+                <TableHead>Tracking Number</TableHead>
+                <TableHead>Current Status</TableHead>
+                <TableHead>Process Status</TableHead>
+                <TableHead>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="-ml-3 h-8"
+                    onClick={() => handleSort('lastStatusUpdate')}
+                  >
+                    Last Status Update (UTC)
+                    <ArrowUpDown className="ml-2 h-4 w-4" />
+                  </Button>
+                </TableHead>
+                <TableHead>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="-ml-3 h-8"
+                    onClick={() => handleSort('daysSinceUpdate')}
+                  >
+                    Days Since Update
+                    <ArrowUpDown className="ml-2 h-4 w-4" />
+                  </Button>
+                </TableHead>
+                <TableHead>Action</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {trackings.length === 0 ? (
+                <TableRow>
+                  <TableCell
+                    colSpan={8}
+                    className="text-center py-8 text-muted-foreground"
+                  >
+                    No tracking orders found
+                  </TableCell>
+                </TableRow>
+              ) : (
+                trackings.map((order) => (
+                  <TableRow key={order.id}>
+                    <TableCell>{getShopName(order.shopId)}</TableCell>
+                    <TableCell className="font-medium">{order.order}</TableCell>
+                    <TableCell className="font-mono text-sm">
+                      {order.trackingNumber}
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant={getStatusColor(order.currentStatus)}>
+                        {order.currentStatus}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      {order.trackingId ? (
+                        <Badge
+                          variant={
+                            order.processStatus === 'Running'
+                              ? 'default'
+                              : 'secondary'
+                          }
+                        >
+                          {order.processStatus || 'Running'}
+                        </Badge>
+                      ) : (
+                        <span className="text-muted-foreground text-sm">
+                          N/A
+                        </span>
+                      )}
+                    </TableCell>
+                    <TableCell>{order.lastStatusUpdate}</TableCell>
+                    <TableCell>{order.daysSinceUpdate}</TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-1">
+                        {order.processStatus === 'Running' && (
+                          <>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => handleManualUpdate(order.id)}
+                              disabled={updatingFulfillmentId === order.id}
+                              title="Manually update tracking status"
+                            >
+                              <RefreshCw
+                                className={`h-4 w-4 ${updatingFulfillmentId === order.id ? 'animate-spin' : ''}`}
+                              />
+                            </Button>
+                            {order.trackingId && (
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => handleStopTracking(order.trackingId!)}
+                                title="Stop tracking"
+                              >
+                                <Square className="h-4 w-4" />
+                              </Button>
+                            )}
+                          </>
+                        )}
+                        {order.processStatus === 'Stopped' &&
+                          order.trackingId &&
+                          order.shopStatus === 'active' && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => handleRegisterTracking(order.id)}
+                              title="Register tracking with 17Track and activate"
+                            >
+                              <Play className="h-4 w-4" />
+                            </Button>
+                          )}
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </div>
+      )}
+
+      {!initialLoading && trackings.length > 0 && (
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-muted-foreground">Show</span>
+            <Select
+              value={itemsPerPage.toString()}
+              onValueChange={(value) => {
+                setItemsPerPage(Number(value));
+                setCurrentPage(1);
+              }}
+            >
+              <SelectTrigger className="h-8 w-auto">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="10">10</SelectItem>
+                <SelectItem value="25">25</SelectItem>
+                <SelectItem value="50">50</SelectItem>
+                <SelectItem value="100">100</SelectItem>
+              </SelectContent>
+            </Select>
+            <span className="text-sm text-muted-foreground">
+              Showing {(currentPage - 1) * itemsPerPage + 1} to{' '}
+              {Math.min(currentPage * itemsPerPage, total)} of {total}
+            </span>
+          </div>
+          {totalPages > 1 && (
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setCurrentPage(currentPage - 1)}
+                disabled={currentPage === 1}
+              >
+                Previous
+              </Button>
+              <div className="text-sm">
+                Page {currentPage} of {totalPages}
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setCurrentPage(currentPage + 1)}
+                disabled={currentPage === totalPages}
+              >
+                Next
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}

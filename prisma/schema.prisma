@@ -1,0 +1,253 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  Admin
+  Customer
+}
+
+enum UserAccess {
+  Enabled
+  Disabled
+}
+
+enum StoreStatus {
+  Active
+  Inactive
+}
+
+enum ShopifyStatus {
+  ATTEMPTED_DELIVERY
+  CARRIER_PICKED_UP
+  CONFIRMED
+  DELAYED
+  DELIVERED
+  FAILURE
+  IN_TRANSIT
+  LABEL_PRINTED
+  LABEL_PURCHASED
+  OUT_FOR_DELIVERY
+  READY_FOR_PICKUP
+}
+
+enum Track17MainStatus {
+  NotFound
+  InfoReceived
+  InTransit
+  Expired
+  AvailableForPickup
+  OutForDelivery
+  DeliveryFailure
+  Delivered
+  Exception
+}
+
+enum Track17SubStatus {
+  NotFound_Other
+  NotFound_InvalidCode
+  InfoReceived
+  InTransit_PickedUp
+  InTransit_Other
+  InTransit_Departure
+  InTransit_Arrival
+  InTransit_CustomsProcessing
+  InTransit_CustomsReleased
+  InTransit_CustomsRequiringInformation
+  Expired_Other
+  AvailableForPickup_Other
+  OutForDelivery_Other
+  DeliveryFailure_Other
+  DeliveryFailure_NoBody
+  DeliveryFailure_Security
+  DeliveryFailure_Rejected
+  DeliveryFailure_InvalidAddress
+  Delivered_Other
+  Exception_Other
+  Exception_Returning
+  Exception_Returned
+  Exception_NoBody
+  Exception_Security
+  Exception_Damage
+  Exception_Rejected
+  Exception_Delayed
+  Exception_Lost
+  Exception_Destroyed
+  Exception_Cancel
+}
+
+enum TrackingProcessStatus {
+  Running
+  Stopped
+}
+
+model User {
+  id            String     @id
+  name          String
+  email         String
+  emailVerified Boolean    @default(false)
+  image         String?
+  role          UserRole   @default(Customer)
+  access        UserAccess @default(Disabled)
+  stores        Store[]
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+  sessions      Session[]
+  accounts      Account[]
+
+  @@unique([email])
+  @@map("user")
+}
+
+model Session {
+  id        String   @id
+  expiresAt DateTime
+  token     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([token])
+  @@index([userId])
+  @@map("session")
+}
+
+model Account {
+  id                    String    @id
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@index([userId])
+  @@map("account")
+}
+
+model Verification {
+  id         String   @id
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
+  @@map("verification")
+}
+
+model Store {
+  id                   String        @id @default(uuid())
+  name                 String
+  shopDomain           String
+  clientId             String
+  secret               String
+  accessToken          String?
+  accessTokenExpiresAt DateTime?
+  status               StoreStatus   @default(Inactive)
+  webhooksRegistered   Boolean       @default(false)
+  ownerId              String
+  owner                User          @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  orders               Order[]
+  fulfillments         Fulfillment[]
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+
+  @@unique([shopDomain])
+  @@index([ownerId])
+  @@map("store")
+}
+
+model Order {
+  id           String        @id @default(uuid())
+  orderId      String
+  name         String
+  shopId       String
+  shop         Store         @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  fulfillments Fulfillment[]
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  @@unique([shopId, orderId])
+  @@index([shopId])
+  @@map("order")
+}
+
+model Fulfillment {
+  id                     String         @id @default(uuid())
+  fulfillmentId          String
+  trackingNumber         String?
+  statusCurrent          ShopifyStatus?
+  statusCurrentUpdatedAt DateTime?
+  deliveredAt            DateTime?
+  shopId                 String
+  shop                   Store          @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  orderId                String
+  order                  Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  trackingId             String?
+  tracking               Tracking?      @relation(fields: [trackingId], references: [id], onDelete: SetNull)
+  createdAt              DateTime       @default(now())
+  updatedAt              DateTime       @updatedAt
+
+  @@unique([shopId, fulfillmentId])
+  @@index([shopId])
+  @@index([orderId])
+  @@index([trackingId])
+  @@map("fulfillment")
+}
+
+model Tracking {
+  id             String                @id @default(uuid())
+  trackingNumber String                @unique
+  lastEventAt    DateTime?
+  lastStatus     Track17MainStatus?
+  lastSubStatus  Track17SubStatus?
+  processStatus  TrackingProcessStatus @default(Running)
+  fulfillments   Fulfillment[]
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime              @updatedAt
+
+  @@index([trackingNumber])
+  @@map("tracking")
+}
+
+model StatusMapping {
+  id               String            @id @default(uuid())
+  track17Status    Track17MainStatus
+  track17SubStatus Track17SubStatus?
+  shopifyStatus    ShopifyStatus
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  @@unique([track17Status, track17SubStatus])
+  @@map("status_mapping")
+}
+
+model SystemConfig {
+  id            String   @id @default(uuid())
+  key           String   @unique
+  track17ApiKey String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@map("system_config")
+}
