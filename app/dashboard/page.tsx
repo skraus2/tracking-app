@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { MultiSelect, MultiSelectOption } from '@/components/ui/multi-select';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useRole } from '@/lib/role-context';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { toast } from 'sonner';
 
@@ -19,6 +19,9 @@ export default function DashboardPage() {
   const [stores, setStores] = useState<MultiSelectOption[]>([]);
   const [selectedStores, setSelectedStores] = useState<string[]>([]);
   const [showStoreFilter, setShowStoreFilter] = useState(false);
+  const [filterInitialized, setFilterInitialized] = useState(false);
+  const isSettingFilterFromUrl = useRef(false);
+  const lastUrlStoresParam = useRef<string | null>(null);
   const [kpiData, setKpiData] = useState({
     numberOfOrders: 0,
     numberOfFulfillments: 0,
@@ -44,7 +47,7 @@ export default function DashboardPage() {
     fulfillmentToDelivered: null as number | null,
   });
 
-  // Load stores and initialize filter from URL
+  // Load stores
   useEffect(() => {
     const loadStores = async () => {
       try {
@@ -65,30 +68,56 @@ export default function DashboardPage() {
         setShowStoreFilter(
           role === 'admin' || storeOptions.length > 1
         );
-
-        // Initialize selected stores from URL params
-        const storesParam = searchParams.get('stores');
-        if (storesParam) {
-          const storeIds = storesParam.split(',').filter(Boolean);
-          // Validate that all store IDs exist
-          const validStoreIds = storeIds.filter((id) =>
-            storeOptions.some((s) => s.value === id)
-          );
-          if (validStoreIds.length > 0) {
-            setSelectedStores(validStoreIds);
-          }
-        }
       } catch (error: any) {
         console.error('Failed to load stores:', error);
       }
     };
 
     loadStores();
-  }, [role, searchParams.toString()]);
+  }, [role]);
 
-  // Update URL when selected stores change
+  // Sync filter from URL - always read from URL when it changes (e.g., on mount or page navigation)
   useEffect(() => {
     if (stores.length === 0) return; // Wait for stores to load
+
+    const storesParam = searchParams.get('stores');
+    
+    // Only sync if URL param actually changed (prevents unnecessary updates)
+    if (lastUrlStoresParam.current === storesParam) {
+      // URL hasn't changed, but mark as initialized if not already
+      if (!filterInitialized) {
+        setFilterInitialized(true);
+      }
+      return;
+    }
+    
+    // URL param changed, update filter
+    lastUrlStoresParam.current = storesParam;
+    isSettingFilterFromUrl.current = true;
+    
+    if (storesParam) {
+      const storeIds = storesParam.split(',').filter(Boolean);
+      // Validate that all store IDs exist
+      const validStoreIds = storeIds.filter((id) =>
+        stores.some((s) => s.value === id)
+      );
+      setSelectedStores(validStoreIds.length > 0 ? validStoreIds : []);
+    } else {
+      setSelectedStores([]);
+    }
+    
+    // Mark as initialized and reset flag
+    setFilterInitialized(true);
+    Promise.resolve().then(() => {
+      isSettingFilterFromUrl.current = false;
+    });
+  }, [stores, searchParams, filterInitialized]);
+
+  // Update URL when selected stores change (but not when setting from URL)
+  useEffect(() => {
+    if (stores.length === 0) return; // Wait for stores to load
+    if (!filterInitialized) return; // Don't update URL until filter is initialized
+    if (isSettingFilterFromUrl.current) return; // Don't update URL if we're setting filter from URL
 
     const params = new URLSearchParams(searchParams.toString());
     const currentStoresParam = params.get('stores') || '';
@@ -99,22 +128,31 @@ export default function DashboardPage() {
       return;
     }
 
+    const newStoresParamForUrl = selectedStores.length > 0 ? selectedStores.join(',') : null;
+    
     if (selectedStores.length > 0) {
       params.set('stores', selectedStores.join(','));
     } else {
       params.delete('stores');
     }
 
+    // Update ref to prevent re-reading from URL
+    lastUrlStoresParam.current = newStoresParamForUrl;
+
     const newUrl = params.toString()
       ? `${window.location.pathname}?${params.toString()}`
       : window.location.pathname;
     router.replace(newUrl, { scroll: false });
-  }, [selectedStores, stores.length, router]);
+  }, [selectedStores, stores.length, router, searchParams, filterInitialized]);
 
   useEffect(() => {
+    // Wait for stores to load AND filter to be initialized before fetching data
+    if (stores.length === 0 || !filterInitialized) {
+      return; // Wait for both stores and filter initialization
+    }
     // Only use initialLoading if we haven't loaded data yet, otherwise use refreshing
     fetchDashboardData(hasLoadedOnce);
-  }, [selectedStores]);
+  }, [selectedStores, stores.length, filterInitialized]);
 
   const fetchDashboardData = async (isRefresh = false) => {
     try {

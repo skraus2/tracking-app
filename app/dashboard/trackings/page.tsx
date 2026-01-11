@@ -22,7 +22,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useRole } from '@/lib/role-context';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { Search, ArrowUpDown, X, RefreshCw, Play, Square, Copy } from 'lucide-react';
@@ -112,6 +112,10 @@ export default function TrackingsPage() {
   const [storeFilter, setStoreFilter] = useState<string[]>([]);
   const [storeOptions, setStoreOptions] = useState<MultiSelectOption[]>([]);
   const [showStoreFilter, setShowStoreFilter] = useState(false);
+  const [filterInitialized, setFilterInitialized] = useState(false);
+  const isUpdatingUrl = useRef(false);
+  const isSettingFilterFromUrl = useRef(false);
+  const lastUrlStoresParam = useRef<string | null>(null);
   const [activeQuickFilter, setActiveQuickFilter] = useState<string | null>(
     null
   );
@@ -149,19 +153,6 @@ export default function TrackingsPage() {
 
           // Show filter if user has more than 1 store or is admin
           setShowStoreFilter(role === 'admin' || options.length > 1);
-
-          // Initialize selected stores from URL params
-          const storesParam = searchParams.get('stores');
-          if (storesParam) {
-            const storeIds = storesParam.split(',').filter(Boolean);
-            // Validate that all store IDs exist
-            const validStoreIds = storeIds.filter((id) =>
-              options.some((s) => s.value === id)
-            );
-            if (validStoreIds.length > 0) {
-              setStoreFilter(validStoreIds);
-            }
-          }
         }
 
         // Also fetch all stores for name lookup (admin endpoint or user endpoint)
@@ -180,11 +171,51 @@ export default function TrackingsPage() {
     };
 
     loadStores();
-  }, [role, searchParams.toString()]);
+  }, [role]); // Only re-fetch when role changes
 
-  // Update URL when filters change
+  // Sync filter from URL - always read from URL when it changes (e.g., on mount or page navigation)
   useEffect(() => {
     if (storeOptions.length === 0) return; // Wait for stores to load
+    if (isUpdatingUrl.current) return; // Don't read if we're updating URL
+
+    const storesParam = searchParams.get('stores');
+    
+    // Only sync if URL param actually changed (prevents unnecessary updates)
+    if (lastUrlStoresParam.current === storesParam) {
+      // URL hasn't changed, but mark as initialized if not already
+      if (!filterInitialized) {
+        setFilterInitialized(true);
+      }
+      return;
+    }
+    
+    // URL param changed, update filter
+    lastUrlStoresParam.current = storesParam;
+    isSettingFilterFromUrl.current = true;
+    
+    if (storesParam) {
+      const storeIds = storesParam.split(',').filter(Boolean);
+      // Validate that all store IDs exist
+      const validStoreIds = storeIds.filter((id) =>
+        storeOptions.some((s) => s.value === id)
+      );
+      setStoreFilter(validStoreIds.length > 0 ? validStoreIds : []);
+    } else {
+      setStoreFilter([]);
+    }
+    
+    // Mark as initialized and reset flag
+    setFilterInitialized(true);
+    Promise.resolve().then(() => {
+      isSettingFilterFromUrl.current = false;
+    });
+  }, [storeOptions, searchParams, filterInitialized]);
+
+  // Update URL when filters change (but not when setting from URL)
+  useEffect(() => {
+    if (storeOptions.length === 0) return; // Wait for stores to load
+    if (!filterInitialized) return; // Don't update URL until filter is initialized
+    if (isSettingFilterFromUrl.current) return; // Don't update URL if we're setting filter from URL
 
     const params = new URLSearchParams(searchParams.toString());
     const currentStoresParam = params.get('stores') || '';
@@ -194,6 +225,11 @@ export default function TrackingsPage() {
     if (currentStoresParam === newStoresParam) {
       return;
     }
+
+    // Mark that we're updating URL to prevent reading back from URL
+    isUpdatingUrl.current = true;
+
+    const newStoresParamForUrl = storeFilter.length > 0 ? storeFilter.join(',') : null;
 
     // Update stores param
     if (storeFilter.length > 0) {
@@ -207,11 +243,19 @@ export default function TrackingsPage() {
       params.set('page', '1');
     }
 
+    // Update ref to prevent re-reading from URL
+    lastUrlStoresParam.current = newStoresParamForUrl;
+
     const newUrl = params.toString()
       ? `${window.location.pathname}?${params.toString()}`
       : window.location.pathname;
     router.replace(newUrl, { scroll: false });
-  }, [storeFilter, storeOptions.length, router]);
+
+    // Reset flag after a short delay to allow URL to update
+    setTimeout(() => {
+      isUpdatingUrl.current = false;
+    }, 100);
+  }, [storeFilter, storeOptions.length, router, searchParams, filterInitialized]);
 
   // Fetch trackings
   const fetchTrackings = async (isRefresh = false) => {
@@ -292,6 +336,10 @@ export default function TrackingsPage() {
   };
 
   useEffect(() => {
+    // Wait for stores to load AND filter to be initialized before fetching data
+    if (storeOptions.length === 0 || !filterInitialized) {
+      return; // Wait for both stores and filter initialization
+    }
     // Only use initialLoading if we haven't loaded data yet, otherwise use refreshing
     fetchTrackings(hasLoadedOnce);
   }, [
@@ -307,6 +355,8 @@ export default function TrackingsPage() {
     sortColumn,
     sortDirection,
     daysThreshold,
+    storeOptions.length,
+    filterInitialized,
   ]);
 
   const hasActiveFilters =
@@ -316,7 +366,6 @@ export default function TrackingsPage() {
     noUpdateFilter ||
     orderCreatedDaysFilter !== null ||
     processStatusFilter === 'Stopped' ||
-    storeFilter.length > 0 ||
     activeQuickFilter !== null;
 
   const getShopName = (shopId: string) => {
@@ -408,7 +457,7 @@ export default function TrackingsPage() {
   const handleClearFilters = () => {
     setOrderSearchQuery('');
     setStatusFilter([]);
-    setStoreFilter([]);
+    // Store filter is not cleared - it's a separate selection, not a filter
     setProcessStatusFilter('Running');
     clearQuickFilter();
     setCurrentPage(1);
