@@ -26,9 +26,10 @@ import { useState, useEffect } from 'react';
 import { useSelectWidth } from '@/hooks/use-select-width';
 import { useRole } from '@/lib/role-context';
 import { useSearchParams, useRouter } from 'next/navigation';
-import { Search, ArrowUpDown, X, RefreshCw, Play, Square } from 'lucide-react';
+import { Search, ArrowUpDown, X, RefreshCw, Play, Square, Copy } from 'lucide-react';
 import { toast } from 'sonner';
 import { MultiSelectOption } from '@/components/ui/multi-select';
+import { cn } from '@/lib/utils';
 
 type TrackingOrder = {
   id: string;
@@ -128,6 +129,7 @@ export default function TrackingsPage() {
   const [updatingFulfillmentId, setUpdatingFulfillmentId] = useState<
     string | null
   >(null);
+  const [copiedCellId, setCopiedCellId] = useState<string | null>(null);
 
   // Calculate width for process status select based on all possible text values
   const processStatusSelectWidth = useSelectWidth([
@@ -625,6 +627,49 @@ export default function TrackingsPage() {
     }
   };
 
+  const handleCopyToClipboard = async (
+    value: string,
+    cellId: string,
+    label: string
+  ) => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopiedCellId(cellId);
+      toast.success('Copied', {
+        description: `${label} copied to clipboard`,
+        duration: 2000,
+      });
+      // Reset the copied state after animation
+      setTimeout(() => {
+        setCopiedCellId(null);
+      }, 2000);
+    } catch (error) {
+      toast.error('Failed to copy', {
+        description: 'Could not copy to clipboard',
+        duration: 2000,
+      });
+    }
+  };
+
+  const handleCopyOrderAndTracking = async (
+    order: string,
+    trackingNumber: string
+  ) => {
+    try {
+      const textToCopy = `${order}, ${trackingNumber}`;
+      await navigator.clipboard.writeText(textToCopy);
+      toast.success('Copied', {
+        description: 'Order and tracking number copied to clipboard',
+        duration: 2000,
+      });
+    } catch (error) {
+      toast.error('Failed to copy', {
+        description: 'Could not copy to clipboard',
+        duration: 2000,
+      });
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex items-start justify-between">
@@ -868,8 +913,40 @@ export default function TrackingsPage() {
                 trackings.map((order) => (
                   <TableRow key={order.id}>
                     <TableCell>{getShopName(order.shopId)}</TableCell>
-                    <TableCell className="font-medium">{order.order}</TableCell>
-                    <TableCell className="font-mono text-sm">
+                    <TableCell
+                      className={cn(
+                        'font-medium cursor-pointer transition-colors',
+                        copiedCellId === `order-${order.id}`
+                          ? 'bg-primary/10'
+                          : 'hover:bg-muted/50'
+                      )}
+                      onClick={() =>
+                        handleCopyToClipboard(
+                          order.order,
+                          `order-${order.id}`,
+                          'Order'
+                        )
+                      }
+                      title="Click to copy order number"
+                    >
+                      {order.order}
+                    </TableCell>
+                    <TableCell
+                      className={cn(
+                        'font-mono text-sm cursor-pointer transition-colors',
+                        copiedCellId === `tracking-${order.id}`
+                          ? 'bg-primary/10'
+                          : 'hover:bg-muted/50'
+                      )}
+                      onClick={() =>
+                        handleCopyToClipboard(
+                          order.trackingNumber,
+                          `tracking-${order.id}`,
+                          'Tracking number'
+                        )
+                      }
+                      title="Click to copy tracking number"
+                    >
                       {order.trackingNumber}
                     </TableCell>
                     <TableCell>
@@ -898,6 +975,19 @@ export default function TrackingsPage() {
                     <TableCell>{order.daysSinceUpdate}</TableCell>
                     <TableCell>
                       <div className="flex items-center gap-1">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() =>
+                            handleCopyOrderAndTracking(
+                              order.order,
+                              order.trackingNumber
+                            )
+                          }
+                          title="Copy order and tracking number"
+                        >
+                          <Copy className="h-4 w-4" />
+                        </Button>
                         {order.processStatus === 'Running' && (
                           <>
                             <Button
