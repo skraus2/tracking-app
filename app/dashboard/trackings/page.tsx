@@ -23,7 +23,6 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { useState, useEffect } from 'react';
-import { useSelectWidth } from '@/hooks/use-select-width';
 import { useRole } from '@/lib/role-context';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { Search, ArrowUpDown, X, RefreshCw, Play, Square, Copy } from 'lucide-react';
@@ -83,7 +82,7 @@ function unformatStatus(status: string): string | null {
   return reverseMap[status] !== undefined ? reverseMap[status] : status;
 }
 
-// Status options for filtering (includes Unknown for null statusCurrent)
+// Status options for filtering
 const STATUS_OPTIONS = [
   { value: 'Label Purchased', label: 'Label Purchased' },
   { value: 'Confirmed', label: 'Confirmed' },
@@ -95,7 +94,6 @@ const STATUS_OPTIONS = [
   { value: 'Ready for Pickup', label: 'Ready for Pickup' },
   { value: 'Delayed', label: 'Delayed' },
   { value: 'Failure', label: 'Failure' },
-  { value: 'Unknown', label: 'Unknown' },
 ];
 
 export default function TrackingsPage() {
@@ -105,7 +103,9 @@ export default function TrackingsPage() {
   const [daysThreshold] = useState(7);
   const [orderSearchQuery, setOrderSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string[]>([]);
+  const [quickFilterStatusFilter, setQuickFilterStatusFilter] = useState<string[]>([]);
   const [noUpdateFilter, setNoUpdateFilter] = useState(false);
+  const [orderCreatedDaysFilter, setOrderCreatedDaysFilter] = useState<number | null>(null);
   const [processStatusFilter, setProcessStatusFilter] = useState<
     'Running' | 'Stopped' | null
   >('Running');
@@ -130,13 +130,6 @@ export default function TrackingsPage() {
     string | null
   >(null);
   const [copiedCellId, setCopiedCellId] = useState<string | null>(null);
-
-  // Calculate width for process status select based on all possible text values
-  const processStatusSelectWidth = useSelectWidth([
-    'All Process Statuses',
-    'Running',
-    'Stopped',
-  ]);
 
   // Fetch stores for shop name lookup and filter
   useEffect(() => {
@@ -236,13 +229,15 @@ export default function TrackingsPage() {
       if (orderSearchQuery) {
         params.append('search', orderSearchQuery);
       }
-      if (statusFilter.length > 0) {
+      // Combine manual status filter and quick filter status filter
+      const combinedStatusFilter = [...statusFilter, ...quickFilterStatusFilter];
+      if (combinedStatusFilter.length > 0) {
         // Convert display status to enum format
         // Filter out null values (Unknown) and handle them separately
-        const enumStatuses = statusFilter
+        const enumStatuses = combinedStatusFilter
           .map(unformatStatus)
           .filter((s): s is string => s !== null);
-        const hasUnknown = statusFilter.some((s) => unformatStatus(s) === null);
+        const hasUnknown = combinedStatusFilter.some((s) => unformatStatus(s) === null);
 
         if (enumStatuses.length > 0) {
           params.append('status', enumStatuses.join(','));
@@ -253,6 +248,9 @@ export default function TrackingsPage() {
       }
       if (noUpdateFilter) {
         params.append('noUpdateDays', daysThreshold.toString());
+      }
+      if (orderCreatedDaysFilter !== null) {
+        params.append('orderCreatedDays', orderCreatedDaysFilter.toString());
       }
       if (processStatusFilter) {
         params.append('processStatus', processStatusFilter);
@@ -302,8 +300,10 @@ export default function TrackingsPage() {
     orderSearchQuery,
     statusFilter,
     noUpdateFilter,
+    orderCreatedDaysFilter,
     processStatusFilter,
     storeFilter,
+    quickFilterStatusFilter,
     sortColumn,
     sortDirection,
     daysThreshold,
@@ -312,8 +312,10 @@ export default function TrackingsPage() {
   const hasActiveFilters =
     orderSearchQuery !== '' ||
     statusFilter.length > 0 ||
+    quickFilterStatusFilter.length > 0 ||
     noUpdateFilter ||
-    processStatusFilter !== null ||
+    orderCreatedDaysFilter !== null ||
+    processStatusFilter === 'Stopped' ||
     storeFilter.length > 0 ||
     activeQuickFilter !== null;
 
@@ -352,16 +354,21 @@ export default function TrackingsPage() {
     return statusMap[status] || 'secondary';
   };
 
+  const clearQuickFilter = () => {
+    setActiveQuickFilter(null);
+    setQuickFilterStatusFilter([]);
+    setNoUpdateFilter(false);
+    setOrderCreatedDaysFilter(null);
+  };
+
   const handleQuickFilter = (filterId: string) => {
     if (activeQuickFilter === filterId) {
-      setActiveQuickFilter(null);
-      setStatusFilter([]);
-      setNoUpdateFilter(false);
-      setProcessStatusFilter(null);
+      clearQuickFilter();
+      setProcessStatusFilter('Running');
     } else {
       setActiveQuickFilter(filterId);
       if (filterId === 'excluding-delivered') {
-        setStatusFilter([
+        setQuickFilterStatusFilter([
           'Confirmed',
           'In Transit',
           'Out for Delivery',
@@ -370,19 +377,29 @@ export default function TrackingsPage() {
           'Failure',
         ]);
         setNoUpdateFilter(true);
-        setProcessStatusFilter(null);
-      } else if (filterId === 'confirmed-only') {
-        setStatusFilter(['Confirmed']);
-        setNoUpdateFilter(true);
-        setProcessStatusFilter(null);
-      } else if (filterId === 'running') {
+        setOrderCreatedDaysFilter(null);
         setProcessStatusFilter('Running');
-        setStatusFilter([]);
+      } else if (filterId === 'confirmed-only') {
+        setQuickFilterStatusFilter(['Label Purchased', 'Confirmed']);
+        setNoUpdateFilter(true);
+        setOrderCreatedDaysFilter(null);
+        setProcessStatusFilter('Running');
+      } else if (filterId === 'order-created-20d') {
+        // Exclude delivered status
+        setQuickFilterStatusFilter([
+          'Label Purchased',
+          'Confirmed',
+          'Carrier Picked Up',
+          'In Transit',
+          'Out for Delivery',
+          'Attempted Delivery',
+          'Ready for Pickup',
+          'Delayed',
+          'Failure',
+        ]);
         setNoUpdateFilter(false);
-      } else if (filterId === 'stopped') {
-        setProcessStatusFilter('Stopped');
-        setStatusFilter([]);
-        setNoUpdateFilter(false);
+        setOrderCreatedDaysFilter(20);
+        setProcessStatusFilter('Running');
       }
     }
     setCurrentPage(1);
@@ -391,21 +408,20 @@ export default function TrackingsPage() {
   const handleClearFilters = () => {
     setOrderSearchQuery('');
     setStatusFilter([]);
-    setNoUpdateFilter(false);
-    setProcessStatusFilter(null);
     setStoreFilter([]);
-    setActiveQuickFilter(null);
+    setProcessStatusFilter('Running');
+    clearQuickFilter();
     setCurrentPage(1);
   };
 
   const handleStatusChange = (value: string[]) => {
     setStatusFilter(value);
-    setActiveQuickFilter(null);
+    clearQuickFilter();
   };
 
   const handleNoUpdateChange = (checked: boolean) => {
     setNoUpdateFilter(checked);
-    setActiveQuickFilter(null);
+    clearQuickFilter();
   };
 
   const handleManualUpdate = async (fulfillmentId: string) => {
@@ -679,6 +695,25 @@ export default function TrackingsPage() {
             View and manage all tracking orders
           </p>
         </div>
+        {showStoreFilter && (
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium text-muted-foreground">
+              Stores:
+            </span>
+            <MultiSelect
+              options={storeOptions}
+              value={storeFilter}
+              onChange={(value) => {
+                setStoreFilter(value);
+                clearQuickFilter();
+                setCurrentPage(1);
+              }}
+              placeholder="All Stores"
+              emptyMessage="No stores found."
+              className="w-[200px]"
+            />
+          </div>
+        )}
       </div>
 
       <div className="flex items-center justify-between gap-4">
@@ -694,7 +729,7 @@ export default function TrackingsPage() {
             onClick={() => handleQuickFilter('confirmed-only')}
             className="h-8"
           >
-            Stale ({daysThreshold}d, Confirmed)
+            7d No Update · Pre-Transit
           </Button>
           <Button
             variant={
@@ -706,27 +741,21 @@ export default function TrackingsPage() {
             onClick={() => handleQuickFilter('excluding-delivered')}
             className="h-8"
           >
-            Stale ({daysThreshold}d, excl. Delivered)
+            7d No Update · Undelivered
           </Button>
           <Button
-            variant={activeQuickFilter === 'running' ? 'default' : 'outline'}
+            variant={
+              activeQuickFilter === 'order-created-20d' ? 'default' : 'outline'
+            }
             size="sm"
-            onClick={() => handleQuickFilter('running')}
+            onClick={() => handleQuickFilter('order-created-20d')}
             className="h-8"
           >
-            Running
-          </Button>
-          <Button
-            variant={activeQuickFilter === 'stopped' ? 'default' : 'outline'}
-            size="sm"
-            onClick={() => handleQuickFilter('stopped')}
-            className="h-8"
-          >
-            Stopped
+            20d+ Undelivered
           </Button>
         </div>
-        <div className="flex items-center gap-2">
-          {hasActiveFilters && (
+        {hasActiveFilters && (
+          <div className="flex items-center gap-2">
             <Button
               variant="ghost"
               size="sm"
@@ -736,18 +765,8 @@ export default function TrackingsPage() {
               <X className="mr-2 h-4 w-4" />
               Clear filters
             </Button>
-          )}
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => fetchTrackings(true)}
-            disabled={refreshing}
-            className="h-8"
-            title="Refresh data"
-          >
-            <RefreshCw className="h-4 w-4" />
-          </Button>
-        </div>
+          </div>
+        )}
       </div>
 
       <div className="flex flex-wrap items-center gap-4">
@@ -758,7 +777,7 @@ export default function TrackingsPage() {
             value={orderSearchQuery}
             onChange={(e) => {
               setOrderSearchQuery(e.target.value);
-              setActiveQuickFilter(null);
+              clearQuickFilter();
               setCurrentPage(1);
             }}
             className="pl-9"
@@ -774,59 +793,18 @@ export default function TrackingsPage() {
           className="w-[180px]"
         />
 
-        {showStoreFilter && (
-          <MultiSelect
-            options={storeOptions}
-            value={storeFilter}
-            onChange={(value) => {
-              setStoreFilter(value);
-              setActiveQuickFilter(null);
-              setCurrentPage(1);
-            }}
-            placeholder="All Stores"
-            emptyMessage="No stores found."
-            className="w-[180px]"
-          />
-        )}
-
-        <Select
-          value={processStatusFilter || 'all'}
-          onValueChange={(value) => {
-            setProcessStatusFilter(
-              value === 'all' ? null : (value as 'Running' | 'Stopped')
-            );
-            setActiveQuickFilter(null);
-            setCurrentPage(1);
-          }}
-        >
-          <SelectTrigger
-            className="w-fit"
-            style={
-              processStatusSelectWidth
-                ? {
-                    width: `${processStatusSelectWidth}px`,
-                    minWidth: `${processStatusSelectWidth}px`,
-                  }
-                : undefined
-            }
-          >
-            <SelectValue placeholder="All Process Statuses" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Process Statuses</SelectItem>
-            <SelectItem value="Running">Running</SelectItem>
-            <SelectItem value="Stopped">Stopped</SelectItem>
-          </SelectContent>
-        </Select>
-
         <div className="flex items-center gap-2 border rounded-lg px-4 py-2">
           <Switch
-            id="no-update-filter"
-            checked={noUpdateFilter}
-            onCheckedChange={handleNoUpdateChange}
+            id="process-status-filter"
+            checked={processStatusFilter === 'Stopped'}
+            onCheckedChange={(checked) => {
+              setProcessStatusFilter(checked ? 'Stopped' : 'Running');
+              clearQuickFilter();
+              setCurrentPage(1);
+            }}
           />
-          <Label htmlFor="no-update-filter" className="cursor-pointer text-sm">
-            No update since {daysThreshold} days
+          <Label htmlFor="process-status-filter" className="cursor-pointer text-sm">
+            Stopped only
           </Label>
         </div>
       </div>
@@ -859,7 +837,7 @@ export default function TrackingsPage() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Shop</TableHead>
+                <TableHead>Store</TableHead>
                 <TableHead>
                   <Button
                     variant="ghost"

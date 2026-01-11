@@ -30,6 +30,8 @@ export async function GET(request: NextRequest) {
     const includeNullStatus = statusNullParam === 'true';
     const noUpdateDaysParam = searchParams.get('noUpdateDays');
     const noUpdateDays = noUpdateDaysParam ? parseInt(noUpdateDaysParam, 10) : null;
+    const orderCreatedDaysParam = searchParams.get('orderCreatedDays');
+    const orderCreatedDays = orderCreatedDaysParam ? parseInt(orderCreatedDaysParam, 10) : null;
     const processStatusFilterParam = searchParams.get('processStatus');
     const processStatusFilter = processStatusFilterParam as TrackingProcessStatus | null;
     const storeFilterParam = searchParams.get('stores');
@@ -153,6 +155,42 @@ export async function GET(request: NextRequest) {
         delete where.OR;
       } else {
         where.OR = searchConditions;
+      }
+    }
+
+    // Order created date filter - filter by order.createdAt
+    if (orderCreatedDays !== null && !isNaN(orderCreatedDays)) {
+      const thresholdDate = new Date();
+      thresholdDate.setDate(thresholdDate.getDate() - orderCreatedDays);
+      
+      // If OR conditions exist, we need to combine with AND
+      if (where.OR) {
+        // Wrap existing OR in AND and add order.createdAt condition
+        if (!where.AND) {
+          where.AND = [];
+        }
+        where.AND.push({ OR: where.OR });
+        where.AND.push({ order: { createdAt: { lte: thresholdDate } } });
+        delete where.OR;
+      } else if (where.AND) {
+        // AND already exists, just add the order.createdAt condition
+        where.AND.push({ order: { createdAt: { lte: thresholdDate } } });
+      } else {
+        // No OR or AND condition, can set order directly
+        if (where.order) {
+          where.order = {
+            ...where.order,
+            createdAt: {
+              lte: thresholdDate,
+            },
+          };
+        } else {
+          where.order = {
+            createdAt: {
+              lte: thresholdDate,
+            },
+          };
+        }
       }
     }
 

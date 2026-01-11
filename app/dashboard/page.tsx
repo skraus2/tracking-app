@@ -2,13 +2,11 @@
 
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { MultiSelect, MultiSelectOption } from '@/components/ui/multi-select';
-import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useRole } from '@/lib/role-context';
 import { useState, useEffect } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { toast } from 'sonner';
-import { RefreshCw } from 'lucide-react';
 
 export default function DashboardPage() {
   const daysThreshold = 7;
@@ -26,6 +24,7 @@ export default function DashboardPage() {
     numberOfFulfillments: 0,
     numberOfTrackings: 0,
     noStatusUpdateSince: 0,
+    orderCreated20Days: 0,
     daysThreshold: daysThreshold,
   });
   const [statusBreakdown, setStatusBreakdown] = useState({
@@ -141,6 +140,7 @@ export default function DashboardPage() {
         numberOfFulfillments: data.numberOfFulfillments,
         numberOfTrackings: data.numberOfTrackings,
         noStatusUpdateSince: data.noStatusUpdateSince,
+        orderCreated20Days: data.orderCreated20Days,
         daysThreshold: data.daysThreshold,
       });
       setStatusBreakdown(data.statusBreakdown);
@@ -168,7 +168,7 @@ export default function DashboardPage() {
           <Skeleton className="h-5 w-64 mt-1" />
         </div>
 
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           <div className="border rounded-lg p-6 space-y-3">
             <Skeleton className="h-5 w-40" />
             <Skeleton className="h-10 w-24" />
@@ -179,6 +179,13 @@ export default function DashboardPage() {
           </div>
           <div className="border rounded-lg p-6 space-y-3">
             <Skeleton className="h-5 w-40" />
+            <Skeleton className="h-10 w-24" />
+          </div>
+        </div>
+
+        <div className="grid gap-4 md:grid-cols-2">
+          <div className="border rounded-lg p-6 space-y-3">
+            <Skeleton className="h-5 w-48" />
             <Skeleton className="h-10 w-24" />
           </div>
           <div className="border rounded-lg p-6 space-y-3">
@@ -225,36 +232,24 @@ export default function DashboardPage() {
             Overview of your system metrics and activity
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          {showStoreFilter && (
-            <>
-              <span className="text-sm font-medium text-muted-foreground">
-                Stores:
-              </span>
-              <MultiSelect
-                options={stores}
-                value={selectedStores}
-                onChange={setSelectedStores}
-                placeholder="All Stores"
-                emptyMessage="No stores found."
-                className="w-[200px]"
-              />
-            </>
-          )}
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => fetchDashboardData(true)}
-            disabled={refreshing}
-            className="h-8"
-            title="Refresh data"
-          >
-            <RefreshCw className="h-4 w-4" />
-          </Button>
-        </div>
+        {showStoreFilter && (
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium text-muted-foreground">
+              Stores:
+            </span>
+            <MultiSelect
+              options={stores}
+              value={selectedStores}
+              onChange={setSelectedStores}
+              placeholder="All Stores"
+              emptyMessage="No stores found."
+              className="w-[200px]"
+            />
+          </div>
+        )}
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="text-sm font-semibold">
@@ -291,7 +286,9 @@ export default function DashboardPage() {
             </div>
           </CardContent>
         </Card>
+      </div>
 
+      <div className="grid gap-4 md:grid-cols-2">
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="text-sm font-semibold">
@@ -301,6 +298,19 @@ export default function DashboardPage() {
           <CardContent>
             <div className="text-4xl font-bold">
               {kpiData.noStatusUpdateSince}
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm font-semibold">
+              20d since Order created (excl. Delivered)
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-4xl font-bold">
+              {kpiData.orderCreated20Days}
             </div>
           </CardContent>
         </Card>

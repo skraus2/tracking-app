@@ -85,6 +85,7 @@ export async function GET(request: NextRequest) {
 
     // Calculate no status update since threshold
     // Use tracking.lastEventAt instead of statusCurrentUpdatedAt (matches trackings table logic)
+    // Exclude delivered fulfillments as they are already completed
     const thresholdDate = new Date();
     thresholdDate.setDate(thresholdDate.getDate() - daysThreshold);
 
@@ -92,10 +93,31 @@ export async function GET(request: NextRequest) {
       where: {
         ...(Object.keys(storeFilter).length > 0 ? storeFilter : {}),
         trackingId: { not: null }, // Only count fulfillments with tracking
+        statusCurrent: { not: ShopifyStatus.DELIVERED }, // Exclude delivered status
         tracking: {
           processStatus: TrackingProcessStatus.Running,
           lastEventAt: {
             lte: thresholdDate,
+          },
+        },
+      },
+    });
+
+    // Calculate orders created 20 days ago (excl. Delivered)
+    const orderCreated20DaysThreshold = new Date();
+    orderCreated20DaysThreshold.setDate(orderCreated20DaysThreshold.getDate() - 20);
+
+    const orderCreated20Days = await prisma.fulfillment.count({
+      where: {
+        ...(Object.keys(storeFilter).length > 0 ? storeFilter : {}),
+        trackingId: { not: null }, // Only count fulfillments with tracking
+        statusCurrent: { not: ShopifyStatus.DELIVERED }, // Exclude delivered status
+        tracking: {
+          processStatus: TrackingProcessStatus.Running,
+        },
+        order: {
+          createdAt: {
+            lte: orderCreated20DaysThreshold,
           },
         },
       },
@@ -254,6 +276,7 @@ export async function GET(request: NextRequest) {
       numberOfFulfillments,
       numberOfTrackings,
       noStatusUpdateSince,
+      orderCreated20Days,
       daysThreshold,
       statusBreakdown,
       averageTimes,
