@@ -7,9 +7,12 @@ import { useRole } from '@/lib/role-context';
 import { useState, useEffect, useRef } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { toast } from 'sonner';
+import { TrackingThresholdsSettings } from '@/components/tracking-thresholds-settings';
+import { useThresholds } from '@/hooks/use-thresholds';
+import type { TrackingThresholds } from '@/lib/threshold-utils';
 
 export default function DashboardPage() {
-  const daysThreshold = 7;
+  const thresholds = useThresholds();
   const { role } = useRole();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -22,13 +25,16 @@ export default function DashboardPage() {
   const [filterInitialized, setFilterInitialized] = useState(false);
   const isSettingFilterFromUrl = useRef(false);
   const lastUrlStoresParam = useRef<string | null>(null);
+  // Track the latest request ID to prevent race conditions
+  // Each request gets a unique ID, and only responses matching the latest ID should update state
+  const latestRequestIdRef = useRef<number>(0);
   const [kpiData, setKpiData] = useState({
     numberOfOrders: 0,
     numberOfFulfillments: 0,
     numberOfTrackings: 0,
     noStatusUpdateSince: 0,
     orderCreated20Days: 0,
-    daysThreshold: daysThreshold,
+    daysThreshold: thresholds.daysWithoutUpdate,
   });
   const [statusBreakdown, setStatusBreakdown] = useState({
     labelPurchased: 0,
@@ -152,17 +158,29 @@ export default function DashboardPage() {
     }
     // Only use initialLoading if we haven't loaded data yet, otherwise use refreshing
     fetchDashboardData(hasLoadedOnce);
-  }, [selectedStores, stores.length, filterInitialized]);
+  }, [selectedStores, stores.length, filterInitialized, thresholds]);
 
   const fetchDashboardData = async (isRefresh = false) => {
+    // Generate a unique request ID for this request
+    latestRequestIdRef.current += 1;
+    const requestId = latestRequestIdRef.current;
+    
+    // Capture threshold values at request time
+    const requestThresholds: TrackingThresholds = {
+      daysWithoutUpdate: thresholds.daysWithoutUpdate,
+      daysUndelivered: thresholds.daysUndelivered,
+    };
+    
     try {
       if (isRefresh) {
         setRefreshing(true);
       } else {
         setInitialLoading(true);
       }
+      
       const params = new URLSearchParams({
-        daysThreshold: daysThreshold.toString(),
+        daysThreshold: requestThresholds.daysWithoutUpdate.toString(),
+        daysUndelivered: requestThresholds.daysUndelivered.toString(),
       });
       if (selectedStores.length > 0) {
         params.append('stores', selectedStores.join(','));
@@ -173,26 +191,37 @@ export default function DashboardPage() {
       }
       const data = await response.json();
 
-      setKpiData({
-        numberOfOrders: data.numberOfOrders,
-        numberOfFulfillments: data.numberOfFulfillments,
-        numberOfTrackings: data.numberOfTrackings,
-        noStatusUpdateSince: data.noStatusUpdateSince,
-        orderCreated20Days: data.orderCreated20Days,
-        daysThreshold: data.daysThreshold,
-      });
-      setStatusBreakdown(data.statusBreakdown);
-      setAverageTimes(data.averageTimes);
-      setHasLoadedOnce(true);
+      // Only update state if this response is for the latest request
+      // This prevents stale responses from overwriting newer data
+      if (requestId === latestRequestIdRef.current) {
+        setKpiData({
+          numberOfOrders: data.numberOfOrders,
+          numberOfFulfillments: data.numberOfFulfillments,
+          numberOfTrackings: data.numberOfTrackings,
+          noStatusUpdateSince: data.noStatusUpdateSince,
+          orderCreated20Days: data.orderCreated20Days,
+          daysThreshold: requestThresholds.daysWithoutUpdate,
+        });
+        setStatusBreakdown(data.statusBreakdown);
+        setAverageTimes(data.averageTimes);
+        setHasLoadedOnce(true);
+      }
+      // If a newer request was made, ignore this response
     } catch (error: any) {
-      toast.error('Error', {
-        description: error.message || 'Failed to fetch dashboard data',
-      });
+      // Only show error if this is still the latest request (to avoid stale error messages)
+      if (requestId === latestRequestIdRef.current) {
+        toast.error('Error', {
+          description: error.message || 'Failed to fetch dashboard data',
+        });
+      }
     } finally {
-      if (isRefresh) {
-        setRefreshing(false);
-      } else {
-        setInitialLoading(false);
+      // Only update loading state if this is still the latest request
+      if (requestId === latestRequestIdRef.current) {
+        if (isRefresh) {
+          setRefreshing(false);
+        } else {
+          setInitialLoading(false);
+        }
       }
     }
   };
@@ -270,21 +299,24 @@ export default function DashboardPage() {
             Overview of your system metrics and activity
           </p>
         </div>
-        {showStoreFilter && (
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-medium text-muted-foreground">
-              Stores:
-            </span>
-            <MultiSelect
-              options={stores}
-              value={selectedStores}
-              onChange={setSelectedStores}
-              placeholder="All Stores"
-              emptyMessage="No stores found."
-              className="w-[200px]"
-            />
-          </div>
-        )}
+        <div className="flex items-center gap-2">
+          {showStoreFilter && (
+            <>
+              <span className="text-sm font-medium text-muted-foreground">
+                Stores:
+              </span>
+              <MultiSelect
+                options={stores}
+                value={selectedStores}
+                onChange={setSelectedStores}
+                placeholder="All Stores"
+                emptyMessage="No stores found."
+                className="w-[200px]"
+              />
+            </>
+          )}
+          <TrackingThresholdsSettings />
+        </div>
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
@@ -330,7 +362,7 @@ export default function DashboardPage() {
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="text-sm font-semibold">
-              No status update since {kpiData.daysThreshold} days
+              No status update since {thresholds.daysWithoutUpdate} days
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -343,7 +375,7 @@ export default function DashboardPage() {
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="text-sm font-semibold">
-              20d since Order created (excl. Delivered)
+              {thresholds.daysUndelivered}d+ since Order created (excl. Delivered)
             </CardTitle>
           </CardHeader>
           <CardContent>

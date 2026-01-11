@@ -13,6 +13,7 @@ export async function GET(request: NextRequest) {
 
     const searchParams = request.nextUrl.searchParams;
     const daysThreshold = parseInt(searchParams.get('daysThreshold') || '7', 10);
+    const daysUndelivered = parseInt(searchParams.get('daysUndelivered') || '20', 10);
     const storeFilterParam = searchParams.get('stores');
     const storeIds = storeFilterParam ? storeFilterParam.split(',').filter(Boolean) : [];
 
@@ -103,9 +104,9 @@ export async function GET(request: NextRequest) {
       },
     });
 
-    // Calculate orders created 20 days ago (excl. Delivered)
+    // Calculate orders created X days ago (excl. Delivered)
     const orderCreated20DaysThreshold = new Date();
-    orderCreated20DaysThreshold.setDate(orderCreated20DaysThreshold.getDate() - 20);
+    orderCreated20DaysThreshold.setDate(orderCreated20DaysThreshold.getDate() - daysUndelivered);
 
     const orderCreated20Days = await prisma.fulfillment.count({
       where: {

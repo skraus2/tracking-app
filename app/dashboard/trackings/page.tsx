@@ -29,6 +29,9 @@ import { Search, ArrowUpDown, X, RefreshCw, Play, Square, Copy } from 'lucide-re
 import { toast } from 'sonner';
 import { MultiSelectOption } from '@/components/ui/multi-select';
 import { cn } from '@/lib/utils';
+import { TrackingThresholdsSettings } from '@/components/tracking-thresholds-settings';
+import { useThresholds } from '@/hooks/use-thresholds';
+import type { TrackingThresholds } from '@/lib/threshold-utils';
 
 type TrackingOrder = {
   id: string;
@@ -100,7 +103,7 @@ export default function TrackingsPage() {
   const { role } = useRole();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const [daysThreshold] = useState(7);
+  const thresholds = useThresholds();
   const [orderSearchQuery, setOrderSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string[]>([]);
   const [quickFilterStatusFilter, setQuickFilterStatusFilter] = useState<string[]>([]);
@@ -291,7 +294,7 @@ export default function TrackingsPage() {
         }
       }
       if (noUpdateFilter) {
-        params.append('noUpdateDays', daysThreshold.toString());
+        params.append('noUpdateDays', thresholds.daysWithoutUpdate.toString());
       }
       if (orderCreatedDaysFilter !== null) {
         params.append('orderCreatedDays', orderCreatedDaysFilter.toString());
@@ -335,6 +338,27 @@ export default function TrackingsPage() {
     }
   };
 
+  // Sync orderCreatedDaysFilter when thresholds change and "order-created-20d" filter is active
+  // This ensures the filter value is updated, which will then trigger the main fetch effect
+  useEffect(() => {
+    if (activeQuickFilter === 'order-created-20d') {
+      setOrderCreatedDaysFilter(thresholds.daysUndelivered);
+    }
+  }, [thresholds.daysUndelivered, activeQuickFilter]);
+
+  // Trigger refetch when daysWithoutUpdate threshold changes and noUpdateFilter is active
+  // This is needed because thresholds.daysWithoutUpdate is used directly in fetchTrackings
+  // Note: This effect only runs when thresholds.daysWithoutUpdate changes, not when noUpdateFilter changes
+  useEffect(() => {
+    if (storeOptions.length === 0 || !filterInitialized || !hasLoadedOnce) {
+      return;
+    }
+    if (noUpdateFilter) {
+      fetchTrackings(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [thresholds.daysWithoutUpdate]);
+
   useEffect(() => {
     // Wait for stores to load AND filter to be initialized before fetching data
     if (storeOptions.length === 0 || !filterInitialized) {
@@ -354,7 +378,6 @@ export default function TrackingsPage() {
     quickFilterStatusFilter,
     sortColumn,
     sortDirection,
-    daysThreshold,
     storeOptions.length,
     filterInitialized,
   ]);
@@ -447,7 +470,7 @@ export default function TrackingsPage() {
           'Failure',
         ]);
         setNoUpdateFilter(false);
-        setOrderCreatedDaysFilter(20);
+        setOrderCreatedDaysFilter(thresholds.daysUndelivered);
         setProcessStatusFilter('Running');
       }
     }
@@ -744,25 +767,28 @@ export default function TrackingsPage() {
             View and manage all tracking orders
           </p>
         </div>
-        {showStoreFilter && (
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-medium text-muted-foreground">
-              Stores:
-            </span>
-            <MultiSelect
-              options={storeOptions}
-              value={storeFilter}
-              onChange={(value) => {
-                setStoreFilter(value);
-                clearQuickFilter();
-                setCurrentPage(1);
-              }}
-              placeholder="All Stores"
-              emptyMessage="No stores found."
-              className="w-[200px]"
-            />
-          </div>
-        )}
+        <div className="flex items-center gap-2">
+          {showStoreFilter && (
+            <>
+              <span className="text-sm font-medium text-muted-foreground">
+                Stores:
+              </span>
+              <MultiSelect
+                options={storeOptions}
+                value={storeFilter}
+                onChange={(value) => {
+                  setStoreFilter(value);
+                  clearQuickFilter();
+                  setCurrentPage(1);
+                }}
+                placeholder="All Stores"
+                emptyMessage="No stores found."
+                className="w-[200px]"
+              />
+            </>
+          )}
+          <TrackingThresholdsSettings />
+        </div>
       </div>
 
       <div className="flex items-center justify-between gap-4">
@@ -778,7 +804,7 @@ export default function TrackingsPage() {
             onClick={() => handleQuickFilter('confirmed-only')}
             className="h-8"
           >
-            7d No Update · Pre-Transit
+            {thresholds.daysWithoutUpdate}d No Update · Pre-Transit
           </Button>
           <Button
             variant={
@@ -790,7 +816,7 @@ export default function TrackingsPage() {
             onClick={() => handleQuickFilter('excluding-delivered')}
             className="h-8"
           >
-            7d No Update · Undelivered
+            {thresholds.daysWithoutUpdate}d No Update · Undelivered
           </Button>
           <Button
             variant={
@@ -800,7 +826,7 @@ export default function TrackingsPage() {
             onClick={() => handleQuickFilter('order-created-20d')}
             className="h-8"
           >
-            20d+ Undelivered
+            {thresholds.daysUndelivered}d+ Undelivered
           </Button>
         </div>
         {hasActiveFilters && (
